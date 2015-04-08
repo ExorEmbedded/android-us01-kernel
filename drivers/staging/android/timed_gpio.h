@@ -22,6 +22,7 @@ struct timed_gpio {
 	const char *name;
 	unsigned 	gpio;
 	int		max_timeout;
+	u16 		frequency;
 	u8 		active_low;
 };
 

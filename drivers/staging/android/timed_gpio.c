@@ -24,6 +24,9 @@
 #include "timed_output.h"
 #include "timed_gpio.h"
 
+/* ensure phone band limits */
+#define MAX_FREQUENCY	3400	/* 3400 Hz */
+#define MIN_FREQUENCY	300	/* 300 Hz */
 
 struct timed_gpio_data {
 	struct timed_output_dev dev;
@@ -31,6 +34,9 @@ struct timed_gpio_data {
 	spinlock_t lock;
 	unsigned 	gpio;
 	int 		max_timeout;
+	u32 		toggle_period;
+	u16 		frequency;
+	u16		toggle_counter;
 	u8 		active_low;
 };
 
@@ -39,7 +45,14 @@ static enum hrtimer_restart gpio_timer_func(struct hrtimer *timer)
 	struct timed_gpio_data *data =
 		container_of(timer, struct timed_gpio_data, timer);
 
-	gpio_direction_output(data->gpio, data->active_low ? 1 : 0);
+	if (data->toggle_counter) {
+		hrtimer_forward_now(timer, ns_to_ktime(data->toggle_period));
+		gpio_set_value(data->gpio, data->toggle_counter & 1);
+		data->toggle_counter--;
+		return HRTIMER_RESTART;
+	}
+
+	gpio_set_value(data->gpio, data->active_low ? 1 : 0);
 	return HRTIMER_NORESTART;
 }
 
@@ -66,15 +79,21 @@ static void gpio_enable(struct timed_output_dev *dev, int value)
 
 	/* cancel previous timer and set GPIO according to value */
 	hrtimer_cancel(&data->timer);
-	gpio_direction_output(data->gpio, data->active_low ? !value : !!value);
+	gpio_set_value(data->gpio, data->active_low ? !value : !!value);
 
 	if (value > 0) {
-		if (value > data->max_timeout)
-			value = data->max_timeout;
+		if (data->frequency) {
+			data->toggle_counter = (data->frequency * value * 2) / 1000;
+			hrtimer_start(&data->timer, ktime_set(0, data->toggle_period),
+				HRTIMER_MODE_REL);
+		} else  {
+			if (value > data->max_timeout)
+				value = data->max_timeout;
 
-		hrtimer_start(&data->timer,
-			ktime_set(value / 1000, (value % 1000) * 1000000),
-			HRTIMER_MODE_REL);
+			hrtimer_start(&data->timer,
+				ktime_set(value / 1000, (value % 1000) * 1000000),
+				HRTIMER_MODE_REL);
+		}
 	}
 
 	spin_unlock_irqrestore(&data->lock, flags);
@@ -120,6 +139,16 @@ static int timed_gpio_probe(struct platform_device *pdev)
 			}
 			kfree(gpio_data);
 			return ret;
+		}
+
+		if (cur_gpio->frequency) {
+			if (cur_gpio->frequency > MAX_FREQUENCY)
+				gpio_dat->frequency = MAX_FREQUENCY;
+			else if (cur_gpio->frequency < MIN_FREQUENCY)
+				gpio_dat->frequency = MIN_FREQUENCY;
+			else
+				gpio_dat->frequency = cur_gpio->frequency;
+			gpio_dat->toggle_period = NSEC_PER_SEC / (gpio_dat->frequency * 2);
 		}
 
 		gpio_dat->gpio = cur_gpio->gpio;
