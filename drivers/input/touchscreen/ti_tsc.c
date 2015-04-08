@@ -42,6 +42,8 @@ struct tscadc {
 	int			x_plate_resistance;
 	int			irq;
 	int			steps_to_config;
+	int			active_calibration;
+	int			deltax, deltay;
 };
 
 static unsigned int tscadc_readl(struct tscadc *ts, unsigned int reg)
@@ -146,6 +148,31 @@ static void tsc_step_config(struct tscadc *ts_dev)
 			((1 << ((ts_dev->steps_to_config * 2)  + 3)) - 1));
 }
 
+static void tscadc_autocalibrate(struct tscadc *ts_dev, unsigned int *x, unsigned int *y) {
+	if (*x < ts_dev->x.min) {
+		ts_dev->x.min = *x;
+		ts_dev->deltax = ts_dev->x.max - ts_dev->x.min + 1;
+	} else if (*x > ts_dev->x.max) {
+		ts_dev->x.max = *x;
+		ts_dev->deltax = ts_dev->x.max - ts_dev->x.min + 1;
+	}
+
+	if (*y < ts_dev->y.min) {
+		ts_dev->y.min = *y;
+		ts_dev->deltay = ts_dev->y.max - ts_dev->y.min + 1;
+	} else if (*y > ts_dev->y.max) {
+		ts_dev->y.max = *y;
+		ts_dev->deltay = ts_dev->y.max - ts_dev->y.min + 1;
+	}
+
+	dev_dbg(ts_dev->mfd_tscadc->dev, "X %u < %u < %u, Y %u < %u < %u\n",
+				ts_dev->x.min, *x, ts_dev->x.max,
+				ts_dev->y.min, *y, ts_dev->y.max);
+
+	*x = ((*x - ts_dev->x.min) << 12) / ts_dev->deltax;
+	*y = ((*y - ts_dev->y.min) << 12) / ts_dev->deltay;
+}
+
 static irqreturn_t tscadc_interrupt(int irq, void *dev)
 {
 	struct tscadc		*ts_dev = (struct tscadc *)dev;
@@ -199,8 +226,12 @@ static irqreturn_t tscadc_interrupt(int irq, void *dev)
 				(channel < ts_dev->steps_to_config)) {
 				readx1 = readx1 & 0xfff;
 
-				if (ts_dev->x.inverted)
-					readx1 = ts_dev->x.max - readx1 + ts_dev->x.min;
+				if (ts_dev->x.inverted) {
+					if (ts_dev->active_calibration)
+						readx1 ^= 0xfff;
+					else
+						readx1 = ts_dev->x.max - readx1 + ts_dev->x.min;
+				}
 
 				if (readx1 > prev_val_x)
 					cur_diff_x = readx1 - prev_val_x;
@@ -222,8 +253,12 @@ static irqreturn_t tscadc_interrupt(int irq, void *dev)
 				(channel < (2 * ts_dev->steps_to_config - 1))) {
 				ready1 &= 0xfff;
 
-				if (ts_dev->y.inverted)
-					ready1 = ts_dev->y.max - ready1 + ts_dev->y.min;
+				if (ts_dev->y.inverted) {
+					if (ts_dev->active_calibration)
+						ready1 ^= 0xfff;
+					else
+						ready1 = ts_dev->y.max - ready1 + ts_dev->y.min;
+				}
 
 				if (ready1 > prev_val_y)
 					cur_diff_y = ready1 - prev_val_y;
@@ -264,7 +299,7 @@ static irqreturn_t tscadc_interrupt(int irq, void *dev)
 
 		if ((z1 != 0) && (z2 != 0)) {
 			/*
-			 * cal pressure using formula
+			 * Calculate pressure using formula
 			 * Resistance(touch) = x plate resistance *
 			 * x postion/4096 * ((z2 / z1) - 1)
 			 */
@@ -282,6 +317,8 @@ static irqreturn_t tscadc_interrupt(int irq, void *dev)
 			if (pen == 0) {
 				if ((diffx < 15) && (diffy < 15)
 						&& (z <= MAX_12BIT)) {
+					if (ts_dev->active_calibration)
+						tscadc_autocalibrate(ts_dev, &val_x, &val_y);
 					input_report_abs(input_dev, ABS_X,
 							val_x);
 					input_report_abs(input_dev, ABS_Y,
@@ -379,6 +416,7 @@ static	int __devinit tscadc_probe(struct platform_device *pdev)
 	ts_dev->y.min = pdata->tsc_init->y.min;
 	ts_dev->y.max = pdata->tsc_init->y.max;
 	ts_dev->y.inverted = pdata->tsc_init->y.inverted;
+	ts_dev->active_calibration = pdata->tsc_init->active_calibration;
 
 	/* IRQ Enable */
 	irqenable = TSCADC_IRQENB_FIFO0THRES | TSCADC_IRQENB_FIFO0OVRRUN |
@@ -398,14 +436,21 @@ static	int __devinit tscadc_probe(struct platform_device *pdev)
 	input_dev->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_ABS);
 	input_dev->keybit[BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH);
 
-	input_set_abs_params(input_dev, ABS_X,
-			ts_dev->x.min ? : 0,
-			ts_dev->x.max ? : MAX_12BIT,
-			0, 0);
-	input_set_abs_params(input_dev, ABS_Y,
-			ts_dev->y.min ? : 0,
-			ts_dev->y.max ? : MAX_12BIT,
-			0, 0);
+	if (ts_dev->active_calibration) {
+		input_set_abs_params(input_dev, ABS_X, 0, MAX_12BIT, 0, 0);
+		input_set_abs_params(input_dev, ABS_Y, 0, MAX_12BIT, 0, 0);
+		ts_dev->deltax = ts_dev->x.max - ts_dev->x.min;
+		ts_dev->deltay = ts_dev->y.max - ts_dev->y.min;
+	} else {
+		input_set_abs_params(input_dev, ABS_X,
+				ts_dev->x.min ? : 0,
+				ts_dev->x.max ? : MAX_12BIT,
+				0, 0);
+		input_set_abs_params(input_dev, ABS_Y,
+				ts_dev->y.min ? : 0,
+				ts_dev->y.max ? : MAX_12BIT,
+				0, 0);
+	}
 	input_set_abs_params(input_dev, ABS_PRESSURE, 0, MAX_12BIT, 0, 0);
 
 	/* register to the input system */

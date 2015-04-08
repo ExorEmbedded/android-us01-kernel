@@ -32,4 +32,5 @@ struct tsc_data {
 	struct tsc_axis y;
 	int x_plate_resistance;
 	int steps_to_configure;
+	int active_calibration;
 };
