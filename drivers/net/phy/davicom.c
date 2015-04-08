@@ -134,12 +134,7 @@ static int dm9161_config_init(struct phy_device *phydev)
 		return err;
 
 	/* Reconnect the PHY, and enable Autonegotiation */
-	err = phy_write(phydev, MII_BMCR, BMCR_ANENABLE);
-
-	if (err < 0)
-		return err;
-
-	return 0;
+	return phy_write(phydev, MII_BMCR, BMCR_ANENABLE);
 }
 
 static int dm9161_ack_interrupt(struct phy_device *phydev)
@@ -154,9 +149,12 @@ static struct phy_driver dm9161e_driver = {
 	.name		= "Davicom DM9161E",
 	.phy_id_mask	= 0x0ffffff0,
 	.features	= PHY_BASIC_FEATURES,
+	.flags		= PHY_HAS_INTERRUPT,
 	.config_init	= dm9161_config_init,
 	.config_aneg	= dm9161_config_aneg,
 	.read_status	= genphy_read_status,
+	.ack_interrupt	= dm9161_ack_interrupt,
+	.config_intr	= dm9161_config_intr,
 	.driver		= { .owner = THIS_MODULE,},
 };
 
@@ -165,9 +163,12 @@ static struct phy_driver dm9161a_driver = {
 	.name		= "Davicom DM9161A",
 	.phy_id_mask	= 0x0ffffff0,
 	.features	= PHY_BASIC_FEATURES,
+	.flags		= PHY_HAS_INTERRUPT,
 	.config_init	= dm9161_config_init,
 	.config_aneg	= dm9161_config_aneg,
 	.read_status	= genphy_read_status,
+	.ack_interrupt	= dm9161_ack_interrupt,
+	.config_intr	= dm9161_config_intr,
 	.driver		= { .owner = THIS_MODULE,},
 };
 
