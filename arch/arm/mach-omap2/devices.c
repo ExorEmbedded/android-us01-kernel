@@ -1274,42 +1274,46 @@ int am33xx_cpsw_init(enum am33xx_cpsw_mac_mode mode, unsigned char *phy_id0,
 	u32 mac_lo, mac_hi, gmii_sel;
 	u32 i;
 
-	mac_lo = omap_ctrl_readl(TI81XX_CONTROL_MAC_ID0_LO);
-	mac_hi = omap_ctrl_readl(TI81XX_CONTROL_MAC_ID0_HI);
-	am33xx_cpsw_slaves[0].mac_addr[0] = mac_hi & 0xFF;
-	am33xx_cpsw_slaves[0].mac_addr[1] = (mac_hi & 0xFF00) >> 8;
-	am33xx_cpsw_slaves[0].mac_addr[2] = (mac_hi & 0xFF0000) >> 16;
-	am33xx_cpsw_slaves[0].mac_addr[3] = (mac_hi & 0xFF000000) >> 24;
-	am33xx_cpsw_slaves[0].mac_addr[4] = mac_lo & 0xFF;
-	am33xx_cpsw_slaves[0].mac_addr[5] = (mac_lo & 0xFF00) >> 8;
-
-	/* Read MACID0 from eeprom if eFuse MACID is invalid */
-	if (!is_valid_ether_addr(am33xx_cpsw_slaves[0].mac_addr)) {
+	if (!is_valid_ether_addr(am33xx_macid0)) {
+		mac_lo = omap_ctrl_readl(TI81XX_CONTROL_MAC_ID0_LO);
+		mac_hi = omap_ctrl_readl(TI81XX_CONTROL_MAC_ID0_HI);
+		am33xx_cpsw_slaves[0].mac_addr[0] = mac_hi & 0xFF;
+		am33xx_cpsw_slaves[0].mac_addr[1] = (mac_hi & 0xFF00) >> 8;
+		am33xx_cpsw_slaves[0].mac_addr[2] = (mac_hi & 0xFF0000) >> 16;
+		am33xx_cpsw_slaves[0].mac_addr[3] = (mac_hi & 0xFF000000) >> 24;
+		am33xx_cpsw_slaves[0].mac_addr[4] = mac_lo & 0xFF;
+		am33xx_cpsw_slaves[0].mac_addr[5] = (mac_lo & 0xFF00) >> 8;
+	} else {
+		/* Read MACID0 from efuse if eeprom MACID is invalid */
 		for (i = 0; i < ETH_ALEN; i++)
 			am33xx_cpsw_slaves[0].mac_addr[i] = am33xx_macid0[i];
 	}
 
-	mac_lo = omap_ctrl_readl(TI81XX_CONTROL_MAC_ID1_LO);
-	mac_hi = omap_ctrl_readl(TI81XX_CONTROL_MAC_ID1_HI);
-	am33xx_cpsw_slaves[1].mac_addr[0] = mac_hi & 0xFF;
-	am33xx_cpsw_slaves[1].mac_addr[1] = (mac_hi & 0xFF00) >> 8;
-	am33xx_cpsw_slaves[1].mac_addr[2] = (mac_hi & 0xFF0000) >> 16;
-	am33xx_cpsw_slaves[1].mac_addr[3] = (mac_hi & 0xFF000000) >> 24;
-	am33xx_cpsw_slaves[1].mac_addr[4] = mac_lo & 0xFF;
-	am33xx_cpsw_slaves[1].mac_addr[5] = (mac_lo & 0xFF00) >> 8;
-
-	/* Read MACID1 from eeprom if eFuse MACID is invalid */
-	if (!is_valid_ether_addr(am33xx_cpsw_slaves[1].mac_addr)) {
+	if (!is_valid_ether_addr(am33xx_macid1)) {
+		mac_lo = omap_ctrl_readl(TI81XX_CONTROL_MAC_ID1_LO);
+		mac_hi = omap_ctrl_readl(TI81XX_CONTROL_MAC_ID1_HI);
+		am33xx_cpsw_slaves[1].mac_addr[0] = mac_hi & 0xFF;
+		am33xx_cpsw_slaves[1].mac_addr[1] = (mac_hi & 0xFF00) >> 8;
+		am33xx_cpsw_slaves[1].mac_addr[2] = (mac_hi & 0xFF0000) >> 16;
+		am33xx_cpsw_slaves[1].mac_addr[3] = (mac_hi & 0xFF000000) >> 24;
+		am33xx_cpsw_slaves[1].mac_addr[4] = mac_lo & 0xFF;
+		am33xx_cpsw_slaves[1].mac_addr[5] = (mac_lo & 0xFF00) >> 8;
+	} else {
+		/* Read MACID1 from efuse if eeprom MACID is invalid */
 		for (i = 0; i < ETH_ALEN; i++)
 			am33xx_cpsw_slaves[1].mac_addr[i] = am33xx_macid1[i];
 	}
 
-	switch (mode) {
+	switch (mode & AM33XX_CPSW_MODE_MASK) {
 	case AM33XX_CPSW_MODE_MII:
 		gmii_sel = AM33XX_MII_MODE_EN;
+		am33xx_cpsw_slaves[0].phy_if = PHY_INTERFACE_MODE_MII;
+		am33xx_cpsw_slaves[1].phy_if = PHY_INTERFACE_MODE_MII;
 		break;
 	case AM33XX_CPSW_MODE_RMII:
 		gmii_sel = AM33XX_RMII_MODE_EN;
+		am33xx_cpsw_slaves[0].phy_if = PHY_INTERFACE_MODE_RMII;
+		am33xx_cpsw_slaves[1].phy_if = PHY_INTERFACE_MODE_RMII;
 		break;
 	case AM33XX_CPSW_MODE_RGMII:
 		gmii_sel = AM33XX_RGMII_MODE_EN;
@@ -1319,6 +1323,8 @@ int am33xx_cpsw_init(enum am33xx_cpsw_mac_mode mode, unsigned char *phy_id0,
 	default:
 		return -EINVAL;
 	}
+
+	gmii_sel |= (mode & ~AM33XX_CPSW_MODE_MASK);
 
 	writel(gmii_sel, AM33XX_CTRL_REGADDR(AM33XX_CONTROL_GMII_SEL_OFFSET));
 
