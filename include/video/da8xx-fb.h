@@ -12,6 +12,8 @@
 #ifndef DA8XX_FB_H
 #define DA8XX_FB_H
 
+#define CUSTOM_DISPLAY_NAME "custom-display"
+
 enum panel_type {
 	QVGA = 0,
 	WVGA,
@@ -41,6 +43,7 @@ struct da8xx_lcdc_platform_data {
 	const char type[25];
 	void (*panel_power_ctrl)(int);
 	int  (*get_context_loss_count)(struct device *);
+	int dispid;
 };
 
 struct lcd_ctrl_config {

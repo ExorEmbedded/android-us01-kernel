@@ -36,6 +36,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/lcm.h>
 #include <video/da8xx-fb.h>
+#include <video/displayconfig.h>
 #include <asm/mach-types.h>
 #include <asm/div64.h>
 
@@ -372,6 +373,10 @@ static struct da8xx_panel known_lcd_panels[] = {
 		.vsw = 8,
 		.pxl_clk = 96000000,
 		.invert_pxl_clk = 0,
+	},
+	[10] = {
+		 /* Custom display */
+		.name = CUSTOM_DISPLAY_NAME,
 	},
 };
 
@@ -1368,6 +1373,32 @@ static unsigned int da8xxfb_pixel_clk_period(struct da8xx_fb_par *par)
 	return pix_clk_period_picosec;
 }
 
+static int populate_info_from_dispid(struct da8xx_panel *lcdc_info, int dispid)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(displayconfig); i++) {
+		if (displayconfig[i].dispid == dispid)
+			break;
+	}
+
+	if (i == ARRAY_SIZE(displayconfig))
+		return -ENODEV;
+
+	lcdc_info->width = displayconfig[i].rezx;
+	lcdc_info->height = displayconfig[i].rezy;
+	lcdc_info->hfp = displayconfig[i].hs_fp;
+	lcdc_info->hbp = displayconfig[i].hs_bp;
+	lcdc_info->hsw = displayconfig[i].hs_w;
+	lcdc_info->vfp = displayconfig[i].vs_fp;
+	lcdc_info->vbp = displayconfig[i].vs_bp;
+	lcdc_info->vsw = displayconfig[i].vs_w;
+	lcdc_info->pxl_clk = 1000 * displayconfig[i].pclk_freq;
+	lcdc_info->invert_pxl_clk = displayconfig[i].pclk_inv;
+
+	return 0;
+}
+
 static int __devinit fb_probe(struct platform_device *device)
 {
 	struct da8xx_lcdc_platform_data *fb_pdata =
@@ -1378,7 +1409,7 @@ static int __devinit fb_probe(struct platform_device *device)
 	struct clk *fb_clk = NULL;
 	struct da8xx_fb_par *par;
 	resource_size_t len;
-	int ret, i;
+	int ret = 0, i;
 	unsigned long ulcm;
 
 	if (fb_pdata == NULL) {
@@ -1448,6 +1479,13 @@ static int __devinit fb_probe(struct platform_device *device)
 	} else
 		dev_info(&device->dev, "GLCD: Found %s panel\n",
 					fb_pdata->type);
+
+	if (strcmp(CUSTOM_DISPLAY_NAME, lcdc_info->name) == 0) {
+		if (populate_info_from_dispid(lcdc_info, fb_pdata->dispid)) {
+			dev_err(&device->dev, "GLCD: Invalid custom-panel id %d\n", fb_pdata->dispid);
+			goto err_pm_runtime_disable;
+		}
+	}
 
 	lcd_cfg = (struct lcd_ctrl_config *)fb_pdata->controller_data;
 
