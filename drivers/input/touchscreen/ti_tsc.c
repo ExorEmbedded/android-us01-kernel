@@ -251,6 +251,13 @@ static irqreturn_t tscadc_interrupt(int irq, void *dev)
 		z1 = ((tscadc_readl(ts_dev, TSCADC_REG_FIFO0)) & 0xfff);
 		z2 = ((tscadc_readl(ts_dev, TSCADC_REG_FIFO0)) & 0xfff);
 
+		if (z2 < z1) {
+			/* z2 must be greater than z1 */
+			unsigned int tmp = z2;
+			z2 = z1;
+			z1 = tmp;
+		}
+
 		fifo0count = tscadc_readl(ts_dev, TSCADC_REG_FIFO0CNT);
 		for (i = 0; i < fifo0count; i++)
 			tscadc_readl(ts_dev, TSCADC_REG_FIFO0);
@@ -383,6 +390,8 @@ static	int __devinit tscadc_probe(struct platform_device *pdev)
 	tscadc_writel(ts_dev, TSCADC_REG_FIFO0THR,
 			ts_dev->steps_to_config * 2 + 1);
 
+	tscadc_writel(ts_dev, TSCADC_REG_CLKDIV, TSCADC_CLKDIV_DEFAULT);
+
 	input_dev->name = "ti-tsc";
 	input_dev->dev.parent = &pdev->dev;
 
@@ -467,6 +476,9 @@ static int tsc_resume(struct platform_device *pdev)
 	fifo0count = tscadc_readl(ts_dev, TSCADC_REG_FIFO0CNT);
 	for (i = 0; i < fifo0count; i++)
 		tscadc_readl(ts_dev, TSCADC_REG_FIFO0);
+
+	tscadc_writel(ts_dev, TSCADC_REG_CLKDIV, TSCADC_CLKDIV_DEFAULT);
+
 	return 0;
 }
 
