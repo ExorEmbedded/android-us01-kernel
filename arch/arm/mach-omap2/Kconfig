@@ -350,6 +350,11 @@ config MACH_AM335XEVM_WILINK8
 	depends on MACH_AM335XEVM
 	default n
 
+config MACH_AM335X_US01
+	bool "AM335X US01 Module"
+	depends on MACH_AM335XEVM
+	default n
+
 config MACH_AM335XIAEVM
 	bool "AM335X IA Evaluation Module"
 	depends on SOC_OMAPAM33XX

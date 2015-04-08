@@ -36,6 +36,7 @@
 #include <linux/mfd/tps65910.h>
 #include <linux/mfd/tps65217.h>
 #include <linux/pwm_backlight.h>
+#include <linux/i2c/tsc2004.h>
 #include <linux/input/ti_tsc.h>
 #include <linux/platform_data/ti_adc.h>
 #include <linux/mfd/ti_tscadc.h>
@@ -48,6 +49,7 @@
 
 /* LCD controller is similar to DA850 */
 #include <video/da8xx-fb.h>
+#include <video/displayconfig.h>
 
 #include <mach/hardware.h>
 #include <mach/board-am335xevm.h>
@@ -78,6 +80,8 @@
 #include "devices.h"
 #include "hsmmc.h"
 
+#include <../../../drivers/staging/android/timed_gpio.h>
+
 #include "control.h"
 /* Convert GPIO signal to GPIO pin number */
 #define GPIO_TO_PIN(bank, gpio) (32 * (bank) + (gpio))
@@ -95,6 +99,7 @@
 #define AR8051_RGMII_TX_CLK_DLY		BIT(8)
 
 static int beaglebone_lcd_avdd_en;
+static int force_us01;
 
 #define AM33XX_CTRL_REGADDR(reg)				\
 		AM33XX_L4_WK_IO_ADDRESS(AM33XX_SCM_BASE + (reg))
@@ -115,6 +120,13 @@ static const struct display_panel disp_panel = {
 
 static const struct display_panel bone_lcd_cape_disp_panel = {
 	WVGA,
+	16,
+	16,
+	COLOR_ACTIVE,
+};
+
+static struct display_panel custom_disp_panel = {
+	WVGA,	/* actually unused by da8xx-fb.c driver */
 	16,
 	16,
 	COLOR_ACTIVE,
@@ -188,6 +200,23 @@ static struct lcd_ctrl_config bone_lcd_cape_cfg = {
 	.raster_order           = 0,
 };
 
+static struct lcd_ctrl_config custom_lcd_cfg = {
+	&custom_disp_panel,
+	.ac_bias                = 255,
+	.ac_bias_intrpt         = 0,
+	.dma_burst_sz           = 16,
+	.bpp                    = 16,
+	.fdd                    = 0x80,
+	.tft_alt_mode           = 0,
+	.stn_565_mode           = 0,
+	.mono_8bit_mode         = 0,
+	.invert_line_clock      = 1,
+	.invert_frm_clock       = 1,
+	.sync_edge              = 0,
+	.sync_ctrl              = 1,
+	.raster_order           = 0,
+};
+
 struct da8xx_lcdc_platform_data TFC_S9700RTWV35TR_01B_pdata = {
 	.manu_name		= "ThreeFive",
 	.controller_data	= &lcd_cfg,
@@ -222,6 +251,12 @@ struct da8xx_lcdc_platform_data  NHD_480272MF_ATXI_bone_lcd_cape_pdata = {
 	.manu_name              = "BBToys",
 	.controller_data        = &bone_lcd_cape_cfg,
 	.type                   = "NHD-4.3-ATXI#-T-1",
+};
+
+struct da8xx_lcdc_platform_data  custom_lcd_pdata = {
+	.manu_name              = "cust-manu",
+	.controller_data        = &custom_lcd_cfg,
+	.type                   = "custom-display",
 };
 
 #include "common.h"
@@ -313,6 +348,30 @@ static struct tsc_data beaglebone_touchscreen_data = {
 
 static struct mfd_tscadc_board beaglebone_tscadc = {
 	.tsc_init = &beaglebone_touchscreen_data,
+};
+
+/* Touchscreen Controller Data for Exor US01 */
+/* Calibrated on US01 LCD 7" */
+/* The values have to be fine tuned for other revisions, if required */
+static struct tsc_data us01_touchscreen_data = {
+	.wires = 4,
+	.x = {
+		.min = 0x80,
+		.max = 0xF7F,
+		.inverted = 1,
+	},
+	.y = {
+		.min = 0x100,
+		.max = 0xEFF,
+		.inverted = 1,
+	},
+	.x_plate_resistance = 600,
+	.steps_to_configure = 5,
+	.active_calibration = 1,
+};
+
+static struct mfd_tscadc_board us01_tscadc = {
+	.tsc_init = &us01_touchscreen_data,
 };
 
 static u8 am335x_iis_serializer_direction1[] = {
@@ -910,7 +969,7 @@ static struct pinmux_config rmii1_pin_mux[] = {
 	{"mii1_rxd1.mii1_rxd1", OMAP_MUX_MODE1 | AM33XX_PIN_INPUT_PULLDOWN},
 	{"mii1_rxd0.mii1_rxd0", OMAP_MUX_MODE1 | AM33XX_PIN_INPUT_PULLDOWN},
 	{"rmii1_refclk.rmii1_refclk", OMAP_MUX_MODE0 | AM33XX_PIN_INPUT_PULLDOWN},
-	{"mdio_data.mdio_data", OMAP_MUX_MODE0 | AM33XX_PIN_INPUT_PULLUP},
+	{"mdio_data.mdio_data", OMAP_MUX_MODE0 | AM33XX_SLEWCTRL_SLOW | AM33XX_PIN_INPUT_PULLUP},
 	{"mdio_clk.mdio_clk", OMAP_MUX_MODE0 | AM33XX_PIN_OUTPUT_PULLUP},
 	{NULL, 0},
 };
@@ -1632,6 +1691,7 @@ static int __init backlight_init(void)
 		int ecap_index = 0;
 
 		switch (am335x_evm_get_id()) {
+		case EXOR_US01:
 		case GEN_PURP_EVM:
 		case GEN_PURP_DDR3_EVM:
 			ecap_index = 0;
@@ -1754,6 +1814,34 @@ static void bone_lcd7_lcdc_init(int evm_id, int profile)
 
 
 	pr_info("Setup LCD display\n");
+	return;
+}
+
+static void us01_lcdc_init(int evm_id, int profile)
+{
+	int us01_bl_en, us01_vdd_en;
+
+	pr_info("IN : %s \n", __FUNCTION__);
+	setup_pin_mux(lcdc_pin_mux);
+
+	if (conf_disp_pll(300000000)) {
+		pr_info("Failed configure display PLL, not attempting to"
+				"register US01 LCDC\n");
+		return;
+	}
+
+	us01_bl_en = GPIO_TO_PIN(2, 0);
+	gpio_request(us01_bl_en, "US01_BL_EN");
+	gpio_direction_output(us01_bl_en, 1);
+
+	us01_vdd_en = GPIO_TO_PIN(1, 29);
+	gpio_request(us01_vdd_en, "US01_VDD_EN");
+	gpio_direction_output(us01_vdd_en, 1);
+
+	if (am33xx_register_lcdc(&custom_lcd_pdata))
+		pr_info("Failed to register US01 LCDC device\n");
+
+	pr_info("Setup US01 LCD display\n");
 	return;
 }
 
@@ -1895,6 +1983,19 @@ static void lcd_cape_tsc_init(int evm_id, int profile)
 		pr_err("failed to register touchscreen device\n");
 
 	pr_info("Setup LCD cape touchscreen\n");
+
+}
+
+static void us01_tsc_init(int evm_id, int profile)
+{
+	int err;
+
+	pr_info("IN : %s \n", __FUNCTION__);
+	err = am33xx_register_mfd_tscadc(&us01_tscadc);
+	if (err)
+		pr_err("failed to register US01 touchscreen device\n");
+
+	pr_info("Setup LCD US01 touchscreen\n");
 
 }
 
@@ -2698,6 +2799,16 @@ static void mmc1_init(int evm_id, int profile)
 		am335x_mmc[1].gpio_wp		= -EINVAL;
 		am335x_mmc[1].ocr_mask		= MMC_VDD_32_33 | MMC_VDD_33_34; /* 3V3 */
 		break;
+	case EXOR_US01:
+		setup_pin_mux(mmc1_common_pin_mux);
+
+		am335x_mmc[1].mmc		= 2;
+		am335x_mmc[1].caps		= MMC_CAP_4_BIT_DATA;
+		am335x_mmc[1].nonremovable	= true;
+		am335x_mmc[1].gpio_cd		= -EINVAL;
+		am335x_mmc[1].gpio_wp		= -EINVAL;
+		am335x_mmc[1].ocr_mask		= MMC_VDD_32_33 | MMC_VDD_33_34; /* 3V3 */
+		break;
 	default:
 		setup_pin_mux(mmc1_common_pin_mux);
 		setup_pin_mux(mmc1_dat4_7_pin_mux);
@@ -2956,6 +3067,12 @@ static void mmc0_init(int evm_id, int profile)
 	case BEAGLE_BONE_BLACK:
 		setup_pin_mux(mmc0_common_pin_mux);
 		setup_pin_mux(mmc0_cd_only_pin_mux);
+		break;
+	case EXOR_US01:
+		setup_pin_mux(mmc0_common_pin_mux);
+		/* FIXME: need to provide CD and WP via MCP23016 */
+		am335x_mmc[0].gpio_cd = -EINVAL;
+		am335x_mmc[0].gpio_wp = -EINVAL;
 		break;
 	default:
 		setup_pin_mux(mmc0_common_pin_mux);
@@ -3348,6 +3465,21 @@ static struct evm_dev_cfg beaglebone_black_dev_cfg[] = {
 	{sgx_init,	DEV_ON_BASEBOARD, PROFILE_NONE},
 	{NULL, 0, 0},
 };
+
+/* Exor US01 */
+static struct evm_dev_cfg exor_us01_dev_cfg[] = {
+	{enable_ecap0,	DEV_ON_BASEBOARD, PROFILE_NONE},
+	{us01_lcdc_init,DEV_ON_BASEBOARD, PROFILE_NONE},
+	{us01_tsc_init,	DEV_ON_BASEBOARD, PROFILE_NONE},
+	{rmii1_init,	DEV_ON_BASEBOARD, PROFILE_NONE},
+	{usb0_init,	DEV_ON_BASEBOARD, PROFILE_NONE},
+	{usb1_init,	DEV_ON_BASEBOARD, PROFILE_NONE},
+	{mmc1_init,	DEV_ON_BASEBOARD, PROFILE_NONE},
+	{mmc0_init,	DEV_ON_BASEBOARD, PROFILE_NONE},
+	{sgx_init,	DEV_ON_BASEBOARD, PROFILE_NONE},
+	{NULL, 0, 0},
+};
+
 /* EVM - Starter Kit */
 static struct evm_dev_cfg evm_sk_dev_cfg[] = {
 	{am335x_rtc_init, DEV_ON_BASEBOARD, PROFILE_ALL},
@@ -3829,6 +3961,87 @@ out:
 	machine_halt();
 }
 
+#define US01_EEPROM_CONFIG_LEN		64
+#define US01_EEPROM_OFFSET_VERSION	2
+#define US01_EEPROM_OFFSET_DISPID	5
+#define US01_EEPROM_OFFSET_MAC00	24
+#define US01_EEPROM_OFFSET_MAC01	25
+#define US01_EEPROM_OFFSET_MAC02	26
+#define US01_EEPROM_OFFSET_MAC03	27
+#define US01_EEPROM_OFFSET_MAC04	28
+#define US01_EEPROM_OFFSET_MAC05	29
+#define US01_EEPROM_OFFSET_MAC10	55
+#define US01_EEPROM_OFFSET_MAC11	56
+#define US01_EEPROM_OFFSET_MAC12	57
+#define US01_EEPROM_OFFSET_MAC13	58
+#define US01_EEPROM_OFFSET_MAC14	59
+#define US01_EEPROM_OFFSET_MAC15	60
+static void us01_board_setup(struct memory_accessor *m, void *c)
+{
+	int i, ret;
+	unsigned char us01_eeprom_config[US01_EEPROM_CONFIG_LEN];
+
+	/*
+	 * Read from the EEPROM.
+	 * If valid, get board specific data.
+	 */
+	pr_info("IN : %s \n", __FUNCTION__);
+	ret = m->read(m, (char *) &us01_eeprom_config, 0, US01_EEPROM_CONFIG_LEN);
+
+	if (ret != US01_EEPROM_CONFIG_LEN) {
+		pr_err("Error reading board EEPROM\n");
+	}
+	if ((us01_eeprom_config[0] != 0xaa) || (us01_eeprom_config[1] != 0x55)) {
+		pr_err("Found unprogrammed board EEPROM\n");
+		return;
+	}
+
+	pr_info("Found board EEPROM version %d with dispid %d, MAC0 %02x:%02x:%02x:%02x:%02x:%02x, MAC1 %02x:%02x:%02x:%02x:%02x:%02x\n",
+		us01_eeprom_config[US01_EEPROM_OFFSET_VERSION],
+		us01_eeprom_config[US01_EEPROM_OFFSET_DISPID],
+		us01_eeprom_config[US01_EEPROM_OFFSET_MAC00],
+		us01_eeprom_config[US01_EEPROM_OFFSET_MAC01],
+		us01_eeprom_config[US01_EEPROM_OFFSET_MAC02],
+		us01_eeprom_config[US01_EEPROM_OFFSET_MAC03],
+		us01_eeprom_config[US01_EEPROM_OFFSET_MAC04],
+		us01_eeprom_config[US01_EEPROM_OFFSET_MAC05],
+		us01_eeprom_config[US01_EEPROM_OFFSET_MAC10],
+		us01_eeprom_config[US01_EEPROM_OFFSET_MAC11],
+		us01_eeprom_config[US01_EEPROM_OFFSET_MAC12],
+		us01_eeprom_config[US01_EEPROM_OFFSET_MAC13],
+		us01_eeprom_config[US01_EEPROM_OFFSET_MAC14],
+		us01_eeprom_config[US01_EEPROM_OFFSET_MAC15]);
+
+	for (i = 0; i < ARRAY_SIZE(displayconfig); i++) {
+		if (displayconfig[i].dispid == us01_eeprom_config[US01_EEPROM_OFFSET_DISPID])
+			break;
+	}
+	if (i == ARRAY_SIZE(displayconfig)) {
+		pr_err("Unknown dispid %d!\n", us01_eeprom_config[US01_EEPROM_OFFSET_DISPID]);
+		return;
+	}
+
+	/* setup just data expected from board file, all other display settings
+	 * are managed by the driver
+	 */
+	custom_lcd_pdata.dispid = displayconfig[i].dispid;
+	custom_lcd_cfg.bpp = displayconfig[i].bpp;
+	custom_lcd_cfg.invert_line_clock = displayconfig[i].hs_inv;
+	custom_lcd_cfg.invert_frm_clock = displayconfig[i].vs_inv;
+	custom_disp_panel.min_bpp = custom_disp_panel.max_bpp = displayconfig[i].bpp;
+	am335x_backlight_data0.pwm_period_ns = 1000000000UL / displayconfig[i].pwmfreq;
+	am335x_backlight_data0.lth_brightness = displayconfig[i].brightness_min;
+	am335x_backlight_data0.dft_brightness = am335x_backlight_data0.max_brightness = displayconfig[i].brightness_max;
+
+	/* Fillup global mac id */
+	am33xx_cpsw_macidfillup(&us01_eeprom_config[US01_EEPROM_OFFSET_MAC00],
+				&us01_eeprom_config[US01_EEPROM_OFFSET_MAC10]);
+
+	am33xx_cpsw_init(AM33XX_CPSW_MODE_RMII | AM33XX_CPSW_MODE_RMII1_CLKEN | AM33XX_CPSW_MODE_RMII2_CLKEN, "0:01", NULL);
+
+	_configure_device(EXOR_US01, exor_us01_dev_cfg, PROFILE_NONE);
+}
+
 static struct at24_platform_data am335x_daughter_board_eeprom_info = {
 	.byte_len       = (256*1024) / 8,
 	.page_size      = 64,
@@ -3861,6 +4074,13 @@ static struct at24_platform_data bone_daughter_board_eeprom_info = {
         .context        = (void *)NULL,
 };
 
+static struct at24_platform_data us01_board_eeprom_info = {
+        .byte_len       = (2*1024) / 8,
+        .page_size      = 16,
+        .flags          = 0,
+        .setup          = us01_board_setup,
+        .context        = (void *)NULL,
+};
 
 static struct regulator_init_data am335x_dummy = {
 	.constraints.always_on	= true,
@@ -3949,6 +4169,42 @@ static struct i2c_board_info __initdata am335x_i2c0_boardinfo[] = {
 	},
 };
 
+static struct tsc2004_platform_data us01_tsc2004_info = {
+	.x_plate_ohms = 400,
+	.irq_gpio = GPIO_TO_PIN(0, 19),
+};
+
+static struct i2c_board_info __initdata am335x_us01_i2c0_boardinfo[] = {
+	{
+		I2C_BOARD_INFO("m41t83", 0x68),
+	},
+	{
+		/* baseboard EEPROM */
+		I2C_BOARD_INFO("24c02", 0x56),
+	},
+	{
+		/* baseboard EEPROM */
+		I2C_BOARD_INFO("24c02", 0x54),
+		.platform_data  = &us01_board_eeprom_info,
+	},
+	{
+		/* us01 X24C04 */
+		I2C_BOARD_INFO("24c04", 0x50),
+	},
+	{
+		I2C_BOARD_INFO("tsc2004", 0x4b),
+		.platform_data = &us01_tsc2004_info,
+	},
+	{
+		/* us01 PCA9536 */
+		I2C_BOARD_INFO("pca9536", 0x41),
+	},
+	{
+		I2C_BOARD_INFO("tps65910", TPS65910_I2C_ID1),	// 0x2d
+		.platform_data  = &am335x_tps65910_info,
+	},
+};
+
 static struct omap_musb_board_data musb_board_data = {
 	.interface_type	= MUSB_INTERFACE_ULPI,
 	/*
@@ -4002,6 +4258,48 @@ static void __init am335x_evm_i2c_init(void)
 
 	omap_register_i2c_bus(1, 100, am335x_i2c0_boardinfo,
 				ARRAY_SIZE(am335x_i2c0_boardinfo));
+}
+
+static struct timed_gpio us01_vibrator = {
+	.name = "vibrator",
+	.gpio = GPIO_TO_PIN(2, 4), //gpio2_4
+	.max_timeout = 100000,
+	.frequency = 400,
+	.active_low = 0,
+};
+
+static  struct timed_gpio_platform_data us01_vibrator_data = {
+	.num_gpios = 1,
+	.gpios = &us01_vibrator,
+};
+
+static struct platform_device us01_vibrator_device = {
+	.name = "timed-gpio",
+	.id = -1,
+	.dev = {
+		.platform_data = &us01_vibrator_data,
+	},
+};
+
+static struct platform_device dummy_charger_device = {
+	.name = "dummy-charger",
+	.id = 1,
+};
+
+static void __init am335x_us01_init(void)
+{
+	omap_register_i2c_bus(1, 100, am335x_us01_i2c0_boardinfo,
+				ARRAY_SIZE(am335x_us01_i2c0_boardinfo));
+
+	omap_mux_init_signal("gpmc_ad6.gpio1_6", OMAP_MUX_MODE7 | OMAP_PIN_OUTPUT);
+	gpio_request(GPIO_TO_PIN(1, 6), "tx-en");
+	gpio_direction_output(GPIO_TO_PIN(1, 6), 1);
+
+	omap_mux_init_signal("gpmc_wen.gpio2_4", OMAP_MUX_MODE7 | OMAP_PIN_OUTPUT);
+	platform_device_register(&us01_vibrator_device);
+	platform_device_register(&dummy_charger_device);
+
+	musb_board_data.mode = (MUSB_PERIPHERAL << 4) | MUSB_HOST;
 }
 
 void __iomem *am33xx_emif_base;
@@ -4068,10 +4366,22 @@ static void __init am33xx_cpuidle_init(void)
 
 static void __init am335x_evm_init(void)
 {
+#ifdef CONFIG_MACH_AM335X_US01
+	/* Exor US01 is not compatible with am335x probing system */
+	/* X24C04 is at the same address of baseboard eeprom, but */
+	/* with different size and structure */
+	force_us01 = 1;
+#else
+	force_us01 = 0;
+#endif
+
 	am33xx_cpuidle_init();
 	am33xx_mux_init(board_mux);
 	omap_serial_init();
-	am335x_evm_i2c_init();
+	if (force_us01)
+		am335x_us01_init();
+	else
+		am335x_evm_i2c_init();
 	omap_sdrc_init(NULL, NULL);
 	usb_musb_init(&musb_board_data);
 	omap_board_config = am335x_evm_config;
