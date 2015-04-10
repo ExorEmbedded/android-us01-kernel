@@ -135,17 +135,7 @@ static void tsc_step_config(struct tscadc *ts_dev)
 						stepconfigz2);
 	tscadc_writel(ts_dev, TSCADC_REG_STEPDELAY(total_steps + 2), delay);
 
-	/*
-	 * ts_dev->steps_to_config holds the number of steps to used to
-	 * read X/Y samples. Hence Multiply by 2, to account for both
-	 * X and Y samples.
-	 * Add 3 to account for pressure values being read.
-	 * Subtract 1 because in the Step enable register the last bit is
-	 * used to set the charge bit.
-	 */
-	tscadc_writel(ts_dev, TSCADC_REG_SE, tscadc_readl
-			(ts_dev, TSCADC_REG_SE) |
-			((1 << ((ts_dev->steps_to_config * 2)  + 3)) - 1));
+	tscadc_writel(ts_dev, TSCADC_REG_SE, TSCADC_STPENB_STEPENB_TC);
 }
 
 static void tscadc_autocalibrate(struct tscadc *ts_dev, unsigned int *x, unsigned int *y) {
@@ -179,45 +169,18 @@ static irqreturn_t tscadc_interrupt(int irq, void *dev)
 	struct input_dev	*input_dev = ts_dev->input;
 	unsigned int		status, irqclr = 0;
 	int			i;
-	int			fsm = 0, fifo0count = 0;
+	int			fsm = 0;
 	unsigned int		readx1 = 0, ready1 = 0;
 	unsigned int		prev_val_x = ~0, prev_val_y = ~0;
 	unsigned int		prev_diff_x = ~0, prev_diff_y = ~0;
 	unsigned int		cur_diff_x = 0, cur_diff_y = 0;
 	unsigned int		val_x = 0, val_y = 0, diffx = 0, diffy = 0;
 	unsigned int		z1 = 0, z2 = 0, z = 0;
-	unsigned int		channel, config;
+	unsigned int		channel;
 
 	status = tscadc_readl(ts_dev, TSCADC_REG_IRQSTATUS);
 
-	/*
-	 * ADC and touchscreen share the IRQ line.
-	 * FIFO1 threshold, FIFO1 Overrun and FIFO1 underflow
-	 * interrupts are used by ADC,
-	 * hence return from touchscreen IRQ handler if FIFO1
-	 * related interrupts occurred.
-	 */
-	if ((status & TSCADC_IRQENB_FIFO1THRES) ||
-			(status & TSCADC_IRQENB_FIFO1OVRRUN) ||
-			(status & TSCADC_IRQENB_FIFO1UNDRFLW))
-		return IRQ_NONE;
-	else if ((status & TSCADC_IRQENB_FIFO0OVRRUN) ||
-			(status & TSCADC_IRQENB_FIFO0UNDRFLW)) {
-		config = tscadc_readl(ts_dev, TSCADC_REG_CTRL);
-		config &= ~(TSCADC_CNTRLREG_TSCSSENB);
-		tscadc_writel(ts_dev, TSCADC_REG_CTRL, config);
-
-		if (status & TSCADC_IRQENB_FIFO0UNDRFLW)
-			tscadc_writel(ts_dev, TSCADC_REG_IRQSTATUS,
-			(status | TSCADC_IRQENB_FIFO0UNDRFLW));
-		else
-			tscadc_writel(ts_dev, TSCADC_REG_IRQSTATUS,
-				(status | TSCADC_IRQENB_FIFO0OVRRUN));
-
-		tscadc_writel(ts_dev, TSCADC_REG_CTRL,
-			(config | TSCADC_CNTRLREG_TSCSSENB));
-		return IRQ_HANDLED;
-	} else if (status & TSCADC_IRQENB_FIFO0THRES) {
+	if (status & TSCADC_IRQENB_FIFO0THRES) {
 		for (i = 0; i < ts_dev->steps_to_config; i++) {
 			readx1 = tscadc_readl(ts_dev, TSCADC_REG_FIFO0);
 			channel = readx1 & 0xf0000;
@@ -293,11 +256,7 @@ static irqreturn_t tscadc_interrupt(int irq, void *dev)
 			z1 = tmp;
 		}
 
-		fifo0count = tscadc_readl(ts_dev, TSCADC_REG_FIFO0CNT);
-		for (i = 0; i < fifo0count; i++)
-			tscadc_readl(ts_dev, TSCADC_REG_FIFO0);
-
-		if ((z1 != 0) && (z2 != 0)) {
+		if ((pen == 0) && (z1 != 0) && (z2 != 0)) {
 			/*
 			 * Calculate pressure using formula
 			 * Resistance(touch) = x plate resistance *
@@ -309,26 +268,14 @@ static irqreturn_t tscadc_interrupt(int irq, void *dev)
 			z /= z1;
 			z = (z + 2047) >> 12;
 
-			/*
-			 * Sample found inconsistent by debouncing
-			 * or pressure is beyond the maximum.
-			 * Don't report it to user space.
-			 */
-			if (pen == 0) {
-				if ((diffx < 15) && (diffy < 15)
-						&& (z <= MAX_12BIT)) {
-					if (ts_dev->active_calibration)
-						tscadc_autocalibrate(ts_dev, &val_x, &val_y);
-					input_report_abs(input_dev, ABS_X,
-							val_x);
-					input_report_abs(input_dev, ABS_Y,
-							val_y);
-					input_report_abs(input_dev, ABS_PRESSURE,
-							z);
-					input_report_key(input_dev, BTN_TOUCH,
-							1);
-					input_sync(input_dev);
-				}
+			if (z <= MAX_12BIT) {
+				if (ts_dev->active_calibration)
+					tscadc_autocalibrate(ts_dev, &val_x, &val_y);
+				input_report_abs(input_dev, ABS_X, val_x);
+				input_report_abs(input_dev, ABS_Y, val_y);
+				input_report_abs(input_dev, ABS_PRESSURE, z);
+				input_report_key(input_dev, BTN_TOUCH, 1);
+				input_sync(input_dev);
 			}
 		}
 		irqclr |= TSCADC_IRQENB_FIFO0THRES;
@@ -352,14 +299,18 @@ static irqreturn_t tscadc_interrupt(int irq, void *dev)
 		}
 		irqclr |= TSCADC_IRQENB_PENUP;
 	}
-	irqclr |= TSCADC_IRQENB_HW_PEN;
 
-	tscadc_writel(ts_dev, TSCADC_REG_IRQSTATUS, (status | irqclr));
+	if (status & TSCADC_IRQENB_HW_PEN) {
+		irqclr |= TSCADC_IRQENB_HW_PEN;
+	}
 
-	tscadc_writel(ts_dev, TSCADC_REG_SE,
-			tscadc_readl(ts_dev, TSCADC_REG_SE) |
-			((1 << ((ts_dev->steps_to_config * 2)  + 3)) - 1));
-	return IRQ_HANDLED;
+	if (irqclr) {
+		tscadc_writel(ts_dev, TSCADC_REG_IRQSTATUS, irqclr);
+		tscadc_writel(ts_dev, TSCADC_REG_SE, TSCADC_STPENB_STEPENB_TC);
+		return IRQ_HANDLED;
+	}
+
+	return IRQ_NONE;
 }
 
 /*
@@ -505,8 +456,6 @@ static int tsc_resume(struct platform_device *pdev)
 {
 	struct ti_tscadc_dev	*tscadc_dev = pdev->dev.platform_data;
 	struct tscadc		*ts_dev = tscadc_dev->tsc;
-	unsigned int		fifo0count;
-	int i;
 
 	if (device_may_wakeup(tscadc_dev->dev)) {
 		tscadc_writel(ts_dev, TSCADC_REG_IRQWAKEUP,
@@ -518,9 +467,6 @@ static int tsc_resume(struct platform_device *pdev)
 	/* Configure to value minus 1 */
 	tscadc_writel(ts_dev, TSCADC_REG_FIFO0THR,
 			ts_dev->steps_to_config * 2 + 1);
-	fifo0count = tscadc_readl(ts_dev, TSCADC_REG_FIFO0CNT);
-	for (i = 0; i < fifo0count; i++)
-		tscadc_readl(ts_dev, TSCADC_REG_FIFO0);
 
 	tscadc_writel(ts_dev, TSCADC_REG_CLKDIV, TSCADC_CLKDIV_DEFAULT);
 
