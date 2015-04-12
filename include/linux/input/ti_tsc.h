@@ -11,6 +11,12 @@ struct tsc_axis {
 	u16 inverted;
 };
 
+enum {
+	TSC_CALIBRATION_FIXED = 0,
+	TSC_CALIBRATION_AUTO,
+	TSC_CALIBRATION_EXTERN,
+};
+
 /**
  * struct tsc_data	Touchscreen wire configuration
  * @wires:		Wires refer to application modes
@@ -32,5 +38,5 @@ struct tsc_data {
 	struct tsc_axis y;
 	int x_plate_resistance;
 	int steps_to_configure;
-	int active_calibration;
+	int calibration_type;
 };

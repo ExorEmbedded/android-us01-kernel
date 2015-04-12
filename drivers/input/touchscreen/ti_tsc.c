@@ -42,8 +42,9 @@ struct tscadc {
 	int			x_plate_resistance;
 	int			irq;
 	int			steps_to_config;
-	int			active_calibration;
+	int			calibration_type;
 	int			deltax, deltay;
+	int			a[7]; // ref tslib/plugins/linear.c
 };
 
 static unsigned int tscadc_readl(struct tscadc *ts, unsigned int reg)
@@ -163,6 +164,15 @@ static void tscadc_autocalibrate(struct tscadc *ts_dev, unsigned int *x, unsigne
 	*y = ((*y - ts_dev->y.min) << 12) / ts_dev->deltay;
 }
 
+// ref tslib/plugins/linear.c function linear_read
+static void tscadc_externcalibrate(struct tscadc *ts_dev, unsigned int *x, unsigned int *y) {
+	unsigned int xtemp = *x;
+	unsigned int ytemp = *y;
+
+	*x = (ts_dev->a[0] * xtemp + ts_dev->a[1] * ytemp + ts_dev->a[2]) / ts_dev->a[6];
+	*y = (ts_dev->a[3] * xtemp + ts_dev->a[4] * ytemp + ts_dev->a[5]) / ts_dev->a[6];
+}
+
 static irqreturn_t tscadc_interrupt(int irq, void *dev)
 {
 	struct tscadc		*ts_dev = (struct tscadc *)dev;
@@ -190,7 +200,7 @@ static irqreturn_t tscadc_interrupt(int irq, void *dev)
 				readx1 = readx1 & 0xfff;
 
 				if (ts_dev->x.inverted) {
-					if (ts_dev->active_calibration)
+					if (ts_dev->calibration_type != TSC_CALIBRATION_FIXED)
 						readx1 ^= 0xfff;
 					else
 						readx1 = ts_dev->x.max - readx1 + ts_dev->x.min;
@@ -217,7 +227,7 @@ static irqreturn_t tscadc_interrupt(int irq, void *dev)
 				ready1 &= 0xfff;
 
 				if (ts_dev->y.inverted) {
-					if (ts_dev->active_calibration)
+					if (ts_dev->calibration_type != TSC_CALIBRATION_FIXED)
 						ready1 ^= 0xfff;
 					else
 						ready1 = ts_dev->y.max - ready1 + ts_dev->y.min;
@@ -269,8 +279,10 @@ static irqreturn_t tscadc_interrupt(int irq, void *dev)
 			z = (z + 2047) >> 12;
 
 			if (z <= MAX_12BIT) {
-				if (ts_dev->active_calibration)
+				if (ts_dev->calibration_type == TSC_CALIBRATION_AUTO)
 					tscadc_autocalibrate(ts_dev, &val_x, &val_y);
+				else if (ts_dev->calibration_type == TSC_CALIBRATION_EXTERN)
+					tscadc_externcalibrate(ts_dev, &val_x, &val_y);
 				input_report_abs(input_dev, ABS_X, val_x);
 				input_report_abs(input_dev, ABS_Y, val_y);
 				input_report_abs(input_dev, ABS_PRESSURE, z);
@@ -312,6 +324,68 @@ static irqreturn_t tscadc_interrupt(int irq, void *dev)
 
 	return IRQ_NONE;
 }
+
+static ssize_t tscadc_calibration_show(struct device *dev,
+				     struct device_attribute *attr, char *buf)
+{
+	struct ti_tscadc_dev	*tscadc_dev = dev->platform_data;
+	struct tscadc		*ts_dev = tscadc_dev->tsc;
+
+	if (ts_dev->calibration_type != TSC_CALIBRATION_EXTERN)
+		return sprintf(buf, "%d %d %d %d %s\n",
+				    ts_dev->x.min,
+				    ts_dev->x.max,
+				    ts_dev->y.min,
+				    ts_dev->y.max,
+				    (ts_dev->calibration_type == TSC_CALIBRATION_FIXED ? "fixed" : "auto"));
+
+	return sprintf(buf, "%d %d %d %d %d %d %d\n",
+			    ts_dev->a[0],
+			    ts_dev->a[1],
+			    ts_dev->a[2],
+			    ts_dev->a[3],
+			    ts_dev->a[4],
+			    ts_dev->a[5],
+			    ts_dev->a[6]);
+}
+
+static ssize_t tscadc_calibration_store(struct device *dev,
+				     struct device_attribute *attr,
+				     const char *buf, size_t count)
+{
+	struct ti_tscadc_dev	*tscadc_dev = dev->platform_data;
+	struct tscadc		*ts_dev = tscadc_dev->tsc;
+	int			res, a[7];
+
+	if (ts_dev->calibration_type != TSC_CALIBRATION_EXTERN) {
+		dev_err(dev, "setting calibration not allowed in %s mode\n", (ts_dev->calibration_type == TSC_CALIBRATION_FIXED ? "fixed" : "auto"));
+		return -EINVAL;
+	}
+
+	res = sscanf(buf, "%d %d %d %d %d %d %d", &a[0], &a[1], &a[2], &a[3], &a[4], &a[5], &a[6]);
+	if (res != 7) {
+		dev_err(dev, "setting calibration in extern mode failed: %d parameters\n", res);
+		return -EINVAL;
+	} else if (!a[6]) {
+		dev_err(dev, "setting calibration in extern mode failed: division by zero\n");
+		return -EINVAL;
+	}
+	for (res = 0; res < 7; res++)
+		ts_dev->a[res] = a[res];
+
+	return count;
+}
+
+static DEVICE_ATTR(calibration, 0666, tscadc_calibration_show, tscadc_calibration_store);
+
+static struct attribute *tscadc_attributes[] = {
+	&dev_attr_calibration.attr,
+	NULL
+};
+
+static const struct attribute_group tscadc_attr_group = {
+	.attrs = tscadc_attributes,
+};
 
 /*
 * The functions for inserting/removing driver as a module.
@@ -367,7 +441,7 @@ static	int __devinit tscadc_probe(struct platform_device *pdev)
 	ts_dev->y.min = pdata->tsc_init->y.min;
 	ts_dev->y.max = pdata->tsc_init->y.max;
 	ts_dev->y.inverted = pdata->tsc_init->y.inverted;
-	ts_dev->active_calibration = pdata->tsc_init->active_calibration;
+	ts_dev->calibration_type = pdata->tsc_init->calibration_type;
 
 	/* IRQ Enable */
 	irqenable = TSCADC_IRQENB_FIFO0THRES | TSCADC_IRQENB_FIFO0OVRRUN |
@@ -387,11 +461,9 @@ static	int __devinit tscadc_probe(struct platform_device *pdev)
 	input_dev->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_ABS);
 	input_dev->keybit[BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH);
 
-	if (ts_dev->active_calibration) {
+	if (ts_dev->calibration_type != TSC_CALIBRATION_FIXED) {
 		input_set_abs_params(input_dev, ABS_X, 0, MAX_12BIT, 0, 0);
 		input_set_abs_params(input_dev, ABS_Y, 0, MAX_12BIT, 0, 0);
-		ts_dev->deltax = ts_dev->x.max - ts_dev->x.min;
-		ts_dev->deltay = ts_dev->y.max - ts_dev->y.min;
 	} else {
 		input_set_abs_params(input_dev, ABS_X,
 				ts_dev->x.min ? : 0,
@@ -404,14 +476,33 @@ static	int __devinit tscadc_probe(struct platform_device *pdev)
 	}
 	input_set_abs_params(input_dev, ABS_PRESSURE, 0, MAX_12BIT, 0, 0);
 
+	if (ts_dev->calibration_type == TSC_CALIBRATION_EXTERN) {
+		// ref tslib/plugins/linear.c function linear_mod_init
+		// {1, 0, 0, 0, 1, 0, 1};
+		ts_dev->a[0] = ts_dev->a[4] = ts_dev->a[6] = 1;
+		ts_dev->a[1] = ts_dev->a[2] = ts_dev->a[3] = ts_dev->a[5] = 0;
+	} else {
+		ts_dev->deltax = ts_dev->x.max - ts_dev->x.min;
+		ts_dev->deltay = ts_dev->y.max - ts_dev->y.min;
+	}
+
+	err = sysfs_create_group(&pdev->dev.kobj, &tscadc_attr_group);
+	if (err) {
+		dev_err(&pdev->dev, "create device file failed!\n");
+		err = -EINVAL;
+		goto err_free_irq;
+	}
+
 	/* register to the input system */
 	err = input_register_device(input_dev);
 	if (err)
-		goto err_free_irq;
+		goto err_remove_attr;
 
 	platform_set_drvdata(pdev, ts_dev);
 	return 0;
 
+err_remove_attr:
+	sysfs_remove_group(&pdev->dev.kobj, &tscadc_attr_group);
 err_free_irq:
 	free_irq(ts_dev->irq, ts_dev);
 err_fail:
@@ -427,6 +518,7 @@ static int __devexit tscadc_remove(struct platform_device *pdev)
 	struct ti_tscadc_dev	*tscadc_dev = pdev->dev.platform_data;
 	struct tscadc		*ts_dev = tscadc_dev->tsc;
 
+	sysfs_remove_group(&pdev->dev.kobj, &tscadc_attr_group);
 	free_irq(ts_dev->irq, ts_dev);
 
 	input_unregister_device(ts_dev->input);

@@ -367,7 +367,7 @@ static struct tsc_data us01_touchscreen_data = {
 	},
 	.x_plate_resistance = 600,
 	.steps_to_configure = 5,
-	.active_calibration = 1,
+	.calibration_type = TSC_CALIBRATION_EXTERN,
 };
 
 static struct mfd_tscadc_board us01_tscadc = {
