@@ -17,6 +17,7 @@
 #include <linux/i2c.h>
 #include <linux/module.h>
 #include <linux/i2c/at24.h>
+#include <linux/i2c/I2CSeeprom.h>
 #include <linux/phy.h>
 #include <linux/gpio.h>
 #include <linux/spi/spi.h>
@@ -3961,34 +3962,19 @@ out:
 	machine_halt();
 }
 
-#define US01_EEPROM_CONFIG_LEN		64
-#define US01_EEPROM_OFFSET_VERSION	2
-#define US01_EEPROM_OFFSET_DISPID	5
-#define US01_EEPROM_OFFSET_MAC00	24
-#define US01_EEPROM_OFFSET_MAC01	25
-#define US01_EEPROM_OFFSET_MAC02	26
-#define US01_EEPROM_OFFSET_MAC03	27
-#define US01_EEPROM_OFFSET_MAC04	28
-#define US01_EEPROM_OFFSET_MAC05	29
-#define US01_EEPROM_OFFSET_MAC10	55
-#define US01_EEPROM_OFFSET_MAC11	56
-#define US01_EEPROM_OFFSET_MAC12	57
-#define US01_EEPROM_OFFSET_MAC13	58
-#define US01_EEPROM_OFFSET_MAC14	59
-#define US01_EEPROM_OFFSET_MAC15	60
 static void us01_board_setup(struct memory_accessor *m, void *c)
 {
 	int i, ret;
-	unsigned char us01_eeprom_config[US01_EEPROM_CONFIG_LEN];
+	unsigned char us01_eeprom_config[FACTORY_SECTION_SIZE_3];
 
 	/*
 	 * Read from the EEPROM.
 	 * If valid, get board specific data.
 	 */
 	pr_info("IN : %s \n", __FUNCTION__);
-	ret = m->read(m, (char *) &us01_eeprom_config, 0, US01_EEPROM_CONFIG_LEN);
+	ret = m->read(m, (char *) &us01_eeprom_config, 0, FACTORY_SECTION_SIZE_3);
 
-	if (ret != US01_EEPROM_CONFIG_LEN) {
+	if (ret != FACTORY_SECTION_SIZE_3) {
 		pr_err("Error reading board EEPROM\n");
 	}
 	if ((us01_eeprom_config[0] != 0xaa) || (us01_eeprom_config[1] != 0x55)) {
@@ -3997,27 +3983,27 @@ static void us01_board_setup(struct memory_accessor *m, void *c)
 	}
 
 	pr_info("Found board EEPROM version %d with dispid %d, MAC0 %02x:%02x:%02x:%02x:%02x:%02x, MAC1 %02x:%02x:%02x:%02x:%02x:%02x\n",
-		us01_eeprom_config[US01_EEPROM_OFFSET_VERSION],
-		us01_eeprom_config[US01_EEPROM_OFFSET_DISPID],
-		us01_eeprom_config[US01_EEPROM_OFFSET_MAC00],
-		us01_eeprom_config[US01_EEPROM_OFFSET_MAC01],
-		us01_eeprom_config[US01_EEPROM_OFFSET_MAC02],
-		us01_eeprom_config[US01_EEPROM_OFFSET_MAC03],
-		us01_eeprom_config[US01_EEPROM_OFFSET_MAC04],
-		us01_eeprom_config[US01_EEPROM_OFFSET_MAC05],
-		us01_eeprom_config[US01_EEPROM_OFFSET_MAC10],
-		us01_eeprom_config[US01_EEPROM_OFFSET_MAC11],
-		us01_eeprom_config[US01_EEPROM_OFFSET_MAC12],
-		us01_eeprom_config[US01_EEPROM_OFFSET_MAC13],
-		us01_eeprom_config[US01_EEPROM_OFFSET_MAC14],
-		us01_eeprom_config[US01_EEPROM_OFFSET_MAC15]);
+		us01_eeprom_config[VERSION_POS],
+		us01_eeprom_config[DISPID_POS],
+		us01_eeprom_config[MACID0_POS],
+		us01_eeprom_config[MACID1_POS],
+		us01_eeprom_config[MACID2_POS],
+		us01_eeprom_config[MACID3_POS],
+		us01_eeprom_config[MACID4_POS],
+		us01_eeprom_config[MACID5_POS],
+		us01_eeprom_config[WIFIMACID0_POS],
+		us01_eeprom_config[WIFIMACID1_POS],
+		us01_eeprom_config[WIFIMACID2_POS],
+		us01_eeprom_config[WIFIMACID3_POS],
+		us01_eeprom_config[WIFIMACID4_POS],
+		us01_eeprom_config[WIFIMACID5_POS]);
 
 	for (i = 0; i < ARRAY_SIZE(displayconfig); i++) {
-		if (displayconfig[i].dispid == us01_eeprom_config[US01_EEPROM_OFFSET_DISPID])
+		if (displayconfig[i].dispid == us01_eeprom_config[DISPID_POS])
 			break;
 	}
 	if (i == ARRAY_SIZE(displayconfig)) {
-		pr_err("Unknown dispid %d!\n", us01_eeprom_config[US01_EEPROM_OFFSET_DISPID]);
+		pr_err("Unknown dispid %d!\n", us01_eeprom_config[DISPID_POS]);
 		return;
 	}
 
@@ -4034,8 +4020,8 @@ static void us01_board_setup(struct memory_accessor *m, void *c)
 	am335x_backlight_data0.dft_brightness = am335x_backlight_data0.max_brightness = displayconfig[i].brightness_max;
 
 	/* Fillup global mac id */
-	am33xx_cpsw_macidfillup(&us01_eeprom_config[US01_EEPROM_OFFSET_MAC00],
-				&us01_eeprom_config[US01_EEPROM_OFFSET_MAC10]);
+	am33xx_cpsw_macidfillup(&us01_eeprom_config[MACID0_POS],
+				&us01_eeprom_config[WIFIMACID0_POS]);
 
 	am33xx_cpsw_init(AM33XX_CPSW_MODE_RMII | AM33XX_CPSW_MODE_RMII1_CLKEN | AM33XX_CPSW_MODE_RMII2_CLKEN, "0:01", NULL);
 
