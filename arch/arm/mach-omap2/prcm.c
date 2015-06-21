@@ -59,6 +59,29 @@ u32 omap_prcm_get_reset_sources(void)
 }
 EXPORT_SYMBOL(omap_prcm_get_reset_sources);
 
+static int us01_update_bootcount(unsigned char count)
+{
+	struct i2c_adapter *a;
+	struct i2c_msg msg;
+	unsigned char buf[3] = { 0x19, 0xbc, 0x00};
+	int ret;
+
+	a = i2c_get_adapter(1);
+	if (!a) {
+		printk("%s: no I2C adapter found\n", __FUNCTION__);
+		return -ENODEV;
+	}
+	buf[2] = count;
+	msg.addr = 0x68;
+	msg.buf = &buf[0];
+	msg.len = 3;
+	msg.flags = 0;
+	ret = i2c_transfer(a, &msg, 1);
+	if (ret != 1)
+		printk("%s: I2C transfer error %d\n", __FUNCTION__, ret);
+	return ret;
+}
+
 /* Resets clock rates and reboots the system. Only called from system.h */
 static void omap_prcm_arch_reset(char mode, const char *cmd)
 {
@@ -69,6 +92,13 @@ static void omap_prcm_arch_reset(char mode, const char *cmd)
 
 		prcm_offs = WKUP_MOD;
 	} else if (cpu_is_am33xx()) {
+#ifdef CONFIG_MACH_AM335X_US01
+		printk("omap_prcm_arch_reset: mode %d, cmd %s\n", mode, cmd);
+		if (strcmp(cmd, "recovery") == 0)
+			us01_update_bootcount(99);
+		else
+			us01_update_bootcount(0);
+#endif
 		prcm_offs = AM33XX_PRM_DEVICE_MOD;
 		omap2_prm_set_mod_reg_bits(OMAP4430_RST_GLOBAL_COLD_SW_MASK,
 					prcm_offs, AM33XX_PRM_RSTCTRL_OFFSET);
