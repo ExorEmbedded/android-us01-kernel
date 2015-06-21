@@ -4272,6 +4272,16 @@ static struct platform_device dummy_charger_device = {
 	.id = 1,
 };
 
+static int buzzer_enabled = 1;
+
+static int __init buzzer_disable(char *str)
+{
+	buzzer_enabled = 0;
+	return 1;
+}
+
+__setup("nobuzzer", buzzer_disable);
+
 static void __init am335x_us01_init(void)
 {
 	omap_register_i2c_bus(1, 100, am335x_us01_i2c0_boardinfo,
@@ -4282,7 +4292,8 @@ static void __init am335x_us01_init(void)
 	gpio_direction_output(GPIO_TO_PIN(1, 6), 1);
 
 	omap_mux_init_signal("gpmc_wen.gpio2_4", OMAP_MUX_MODE7 | OMAP_PIN_OUTPUT);
-	platform_device_register(&us01_vibrator_device);
+	if (buzzer_enabled)
+		platform_device_register(&us01_vibrator_device);
 	platform_device_register(&dummy_charger_device);
 
 	musb_board_data.mode = (MUSB_PERIPHERAL << 4) | MUSB_HOST;
