@@ -492,7 +492,7 @@ static struct omap_board_mux board_mux[] __initdata = {
 	 * If any modules/usecase requries it in different mode, then subsequent
 	 * module init call will change the mux accordingly.
 	 */
-	AM33XX_MUX(XDMA_EVENT_INTR0, OMAP_MUX_MODE3 | AM33XX_PIN_OUTPUT),
+	AM33XX_MUX(XDMA_EVENT_INTR0, OMAP_MUX_MODE7 | AM33XX_PIN_INPUT),
 	AM33XX_MUX(I2C0_SDA, OMAP_MUX_MODE0 | AM33XX_SLEWCTRL_SLOW |
 			AM33XX_INPUT_EN | AM33XX_PIN_OUTPUT),
 	AM33XX_MUX(I2C0_SCL, OMAP_MUX_MODE0 | AM33XX_SLEWCTRL_SLOW |
@@ -4178,9 +4178,13 @@ static struct i2c_board_info __initdata am335x_us01_i2c0_boardinfo[] = {
 		I2C_BOARD_INFO("24c04", 0x50),
 	},
 	{
+	  I2C_BOARD_INFO("pixcir_ts", 0x5C),
+	  .irq	= OMAP_GPIO_IRQ(GPIO_TO_PIN(0, 19)), //OMAP_GPIO_IRQ(GPIO_TSC2004_IRQ),
+	},
+/*	{
 		I2C_BOARD_INFO("tsc2004", 0x4b),
 		.platform_data = &us01_tsc2004_info,
-	},
+	},*/
 	{
 		/* us01 PCA9536 */
 		I2C_BOARD_INFO("pca9536", 0x41),
@@ -4297,6 +4301,10 @@ static void __init am335x_us01_init(void)
 	platform_device_register(&dummy_charger_device);
 
 	musb_board_data.mode = (MUSB_PERIPHERAL << 4) | MUSB_HOST;
+	omap_mux_init_signal("xdma_event_intr0.gpio0_19", OMAP_MUX_MODE7 | AM33XX_PIN_INPUT);
+	gpio_request(GPIO_TO_PIN(0, 19), "touch-irq");
+	
+	gpio_direction_input(GPIO_TO_PIN(0, 19));
 }
 
 void __iomem *am33xx_emif_base;
